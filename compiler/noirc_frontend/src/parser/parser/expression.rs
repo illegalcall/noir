@@ -2313,6 +2313,23 @@ mod tests {
         assert!(matches!(reason, ParserErrorReason::MissingIfCondition));
     }
 
+    #[test]
+    fn errors_on_struct_literal_used_in_if_condition() {
+        let src = "
+        if MyStruct { field: true }.field {}
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        ";
+        let (src, span) = get_source_with_error_span(src);
+        let mut parser = Parser::for_str_with_dummy_file(&src);
+        let _ = parser.parse_expression_or_error();
+
+        let error = get_single_error(&parser.errors, span);
+        assert_snapshot!(
+            error.to_string(),
+            @"Struct literals are not allowed in `if` conditions"
+        );
+    }
+
     /// When an integer is too large, the lexer will issue an error instead of an integer token.
     /// The parser in this case recovers by filling in extra integers in place of these errors.
     #[test]
