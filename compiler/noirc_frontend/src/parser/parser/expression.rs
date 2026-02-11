@@ -592,10 +592,26 @@ impl Parser<'_> {
             return None;
         }
 
-        let condition = self.parse_expression_except_constructor_or_error();
+        let mut condition = self.parse_expression_except_constructor_or_error();
 
         let start_location = self.current_token_location;
-        let Some(consequence) = self.parse_block() else {
+        let consequence = if self.eat_left_brace() {
+            let errors_before_consequence = self.errors.len();
+            let looks_like_struct_literal = matches!(condition.kind, ExpressionKind::Variable(_))
+                && matches!(self.token.token(), Token::Ident(..))
+                && self.next_is(Token::Colon);
+
+            let consequence = self.parse_block_after_left_brace();
+
+            if looks_like_struct_literal {
+                self.errors.truncate(errors_before_consequence);
+                let location = self.location_since(condition.location);
+                self.push_error(ParserErrorReason::StructLiteralInIfCondition, location);
+                condition = Expression { kind: ExpressionKind::Error, location };
+            }
+
+            consequence
+        } else {
             // If it's `if { ... }` and a block doesn't come next, the user likely forgot
             // to include a condition.
             if matches!(condition.kind, ExpressionKind::Block(..)) {
@@ -1054,6 +1070,10 @@ impl Parser<'_> {
             return None;
         }
 
+        Some(self.parse_block_after_left_brace())
+    }
+
+    fn parse_block_after_left_brace(&mut self) -> BlockExpression {
         let statements = self.parse_many(
             "statements",
             without_separator().until(Token::RightBrace),
@@ -1062,7 +1082,7 @@ impl Parser<'_> {
 
         let statements = self.check_statements_require_semicolon(statements);
 
-        Some(BlockExpression { statements })
+        BlockExpression { statements }
     }
 
     fn parse_statement_in_block(&mut self) -> Option<(Statement, (Option<Token>, Location))> {
@@ -2315,19 +2335,15 @@ mod tests {
 
     #[test]
     fn errors_on_struct_literal_used_in_if_condition() {
-        let src = "
-        if MyStruct { field: true }.field {}
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^
-        ";
-        let (src, span) = get_source_with_error_span(src);
+        let src = "if MyStruct { field: true }.field {}";
         let mut parser = Parser::for_str_with_dummy_file(&src);
         let _ = parser.parse_expression_or_error();
 
-        let error = get_single_error(&parser.errors, span);
-        assert_snapshot!(
-            error.to_string(),
-            @"Struct literals are not allowed in `if` conditions"
-        );
+        assert_eq!(parser.errors.len(), 1);
+        assert!(matches!(
+            parser.errors[0].reason(),
+            Some(ParserErrorReason::StructLiteralInIfCondition)
+        ));
     }
 
     /// When an integer is too large, the lexer will issue an error instead of an integer token.
